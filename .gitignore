@@ -11,3 +11,6 @@ data/processed/*
 
 figures/*
 !figures/.gitkeep
+
+CLAUDE.md
+overview.md
