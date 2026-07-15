@@ -58,6 +58,8 @@ from statsmodels.regression.quantile_regression import QuantReg
 
 from point_baselines import MODEL1_K, add_riegel_predictions, build_predictor_table, load_wide
 
+FIGURES_DIR = Path("figures")
+
 PREDICTOR_COL = f"riegel_k{MODEL1_K}_min"
 MILEAGE_COL = "typical_weekly_mileage"
 TARGET_COL = "marathon_time_min"
@@ -277,6 +279,32 @@ def report_one_sided(name, upper, y_test, nominal):
     print(f"  {name:<28s} nominal={nominal:.0%}  empirical coverage={cov:.1%}  mean slack (upper-actual)={slack:5.1f} min")
 
 
+def plot_width_comparison(widths: dict) -> None:
+    """Bar chart of interval width (two-sided) / slack (one-sided) at the
+    nominal 90% level, for every method run in main() — makes the
+    "one-sided buys a tighter bound for the same guarantee" argument
+    visual instead of leaving it in a table."""
+    import matplotlib.pyplot as plt
+
+    FIGURES_DIR.mkdir(parents=True, exist_ok=True)
+    names = list(widths.keys())
+    values = [widths[n] for n in names]
+    colors = ["#3b6ea5" if "one-sided" not in n else "#e67e22" for n in names]
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    bars = ax.barh(names, values, color=colors)
+    for bar, v in zip(bars, values):
+        ax.text(v + 0.5, bar.get_y() + bar.get_height() / 2, f"{v:.1f}", va="center", fontsize=9)
+    ax.set_xlabel("Minutes (full width for two-sided, upper slack for one-sided)")
+    ax.set_title("Interval width at nominal 90% coverage")
+    ax.invert_yaxis()
+    ax.set_xlim(0, max(values) * 1.15)
+    fig.tight_layout()
+    out_path = FIGURES_DIR / "interval_width_comparison.png"
+    fig.savefig(out_path, dpi=150)
+    print(f"Wrote {out_path}")
+
+
 # --------------------------------------------------------------------------
 # Driver
 # --------------------------------------------------------------------------
@@ -300,27 +328,37 @@ def main() -> None:
     X_pool, y_pool = make_X(pool_df), pool_df[TARGET_COL].to_numpy()
     X_test, y_test = make_X(test_df), test_df[TARGET_COL].to_numpy()
 
+    widths = {}
+
     print("--- Two-sided intervals (target coverage 90%) ---")
     lo, hi = split_conformal(X_train, y_train, X_calib, y_calib, X_test, ALPHA)
     report_two_sided("Split conformal", lo, hi, y_test, 1 - ALPHA)
+    widths["Split conformal (two-sided)"] = eval_two_sided(lo, hi, y_test)[1]
 
     lo, hi = cqr(X_train, y_train, X_calib, y_calib, X_test, ALPHA)
     report_two_sided("CQR", lo, hi, y_test, 1 - ALPHA)
+    widths["CQR (two-sided)"] = eval_two_sided(lo, hi, y_test)[1]
 
     lo, hi = jackknife_plus(X_pool, y_pool, X_test, ALPHA)
     report_two_sided("Jackknife+ (pool, n=619)", lo, hi, y_test, 1 - ALPHA, guaranteed_floor=1 - 2 * ALPHA)
+    widths["Jackknife+ (two-sided)"] = eval_two_sided(lo, hi, y_test)[1]
 
     lo, hi = cv_plus(X_pool, y_pool, X_test, ALPHA)
     report_two_sided("CV+ (10-fold, pool, n=619)", lo, hi, y_test, 1 - ALPHA, guaranteed_floor=1 - 2 * ALPHA)
+    widths["CV+ (two-sided)"] = eval_two_sided(lo, hi, y_test)[1]
     print()
 
     print("--- Asymmetric one-sided interval (target coverage 90%, upper bound only) ---")
     upper = one_sided_split_conformal(X_train, y_train, X_calib, y_calib, X_test, ALPHA)
     report_one_sided("Split conformal (one-sided)", upper, y_test, 1 - ALPHA)
+    widths["Split conformal (one-sided slack)"] = float(np.mean(upper - y_test))
 
     upper_jk = jackknife_plus_one_sided(X_pool, y_pool, X_test, ALPHA)
     report_one_sided("Jackknife+ (one-sided, heuristic)", upper_jk, y_test, 1 - ALPHA)
+    widths["Jackknife+ (one-sided slack, heuristic)"] = float(np.mean(upper_jk - y_test))
     print()
+
+    plot_width_comparison(widths)
 
     print("--- For comparison: symmetric 90% interval width vs. one-sided slack ---")
     _, split_width = eval_two_sided(*split_conformal(X_train, y_train, X_calib, y_calib, X_test, ALPHA), y_test)
